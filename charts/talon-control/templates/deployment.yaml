@@ -1,0 +1,369 @@
+{{/*
+  Single-instance appliance, enforced rather than advised.
+
+  Control keeps correctness-critical state in the process, and the rate limiter
+  is only the security-visible half of it:
+
+    - lib/rate-limit.ts counts login, MFA-challenge, MCP-token and short-link
+      attempts in a per-process Map with no shared store, so a second replica
+      hands every throttle its own independent budget and the effective limit
+      (including the login brute-force ceiling) multiplies by the replica count.
+     
+    - lib/services/run-events.ts is an in-process EventEmitter, so schedule-
+      triggered automations double-fire and dev-session approvals strand in the
+      process that did not receive them.
+    - Migrations run on boot with no advisory lock (strategy: Recreate below).
+    - /app/data is a ReadWriteOnce claim; two pods cannot mount it.
+
+  Backing the limiter with Postgres or Redis would fix ONE of those and leave
+  the rest, so this refuses the render instead of letting a topology nothing
+  else in the app supports look sanctioned. The Studio chart fails the same way
+  on its own un-locked migrator.
+
+  replicaCount: 0 still renders — scaling to zero for maintenance is a
+  documented operation.
+*/}}
+{{- if gt (int .Values.replicaCount) 1 }}
+{{- fail "talon-control: replicaCount must be 0 or 1. Control is a single-writer appliance — in-process rate-limit counters (lib/rate-limit.ts), an in-process SSE/run bus, schedule-triggered automations with no cross-process guard, boot-time migrations with no advisory lock, and a ReadWriteOnce data volume. A shared rate-limit store alone would not make a second replica safe. This is a property of the application, not of this chart." }}
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "talon-control.fullname" . }}
+  labels:
+    {{- include "talon-control.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  # Single-instance appliance: never run two pods migrating/serving at once.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "talon-control.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: app
+  template:
+    metadata:
+      labels:
+        {{- include "talon-control.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: app
+      annotations:
+        # Roll the pod when the Secret's contents change. envFrom takes a
+        # snapshot at container start and never re-reads, so without this,
+        # adding a credential — the dev-session OAuth token being the one that
+        # bites — is a `helm upgrade` that reports success and changes nothing
+        # until something else happens to restart the pod. Skipped when the
+        # Secret is yours to manage: the chart cannot see inside it, and hashing
+        # the reference instead would be a checksum that never changes.
+        {{- if not .Values.secrets.existingSecret }}
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        {{- end }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      # The app never calls the Kubernetes API. Tenant provisioning was
+      # retired with the in-cluster path (`Retire the Kubernetes path`,
+      # 2026-09-13) and the image no longer ships helm or kubectl, so
+      # nothing here needs a ServiceAccount token.
+      automountServiceAccountToken: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- $fixOwnership := and .Values.persistence.enabled .Values.persistence.fixOwnership }}
+      {{- if or .Values.postgres.bundled $fixOwnership }}
+      initContainers:
+        {{- if $fixOwnership }}
+        # The second half of the /app/data ownership story, and on some clusters
+        # the only half that does anything. See the fsGroup note below: kubelet
+        # only applies fsGroup to volume plugins that declare themselves
+        # ownership-managed, and the in-tree `hostPath` plugin does not — so on
+        # MicroK8s `hostpath-storage` and anything else handing out hostPath PVs
+        # (which is what this appliance runs on), fsGroup is accepted, rendered,
+        # and silently ignored.
+        #
+        # What that leaves behind, measured on the appliance rather than
+        # reasoned about: the PVC root is `0777 root:root` (the hostpath
+        # provisioner's own mkdir), so writes AT the root still work and the
+        # deployment looks healthy — but every directory inside it, created back
+        # when the image still ran as root, is `0755 root:root`. uid 1000 can
+        # list them and cannot write to them. So the failure is not "the volume
+        # is unwritable", it is one level down and therefore invisible to the
+        # obvious check.
+        #
+        # It arrived in instalments, all of them the same fault. `model cache
+        # dir unusable` (speech models re-downloaded every restart) read as a
+        # cost and got diagnosed as a chart-not-applied problem. Then
+        # `Preparing the checkout failed: EACCES: permission denied, mkdir
+        # '/app/data/dev-sessions/<id>'` — a dev session that cannot start.
+        # Then, once someone finally listed the directory: media uploads, voice
+        # notes and the App Logs history had ALL stopped writing on the day the
+        # image went non-root, silently, for a week. Nothing surfaces a write
+        # that never happened.
+        #
+        # So chown it here instead of trusting the substrate. Root, briefly, in
+        # an init container — the app container itself has no root left to do
+        # this with (Dockerfile's `USER node`), which is exactly why fsGroup was
+        # reached for in the first place.
+        #
+        # Cheap in the steady state on purpose: the `find` stops at the first
+        # entry not already owned by 1000 (`-quit`) and looks one level deep, so
+        # a healthy volume costs one shallow scan per pod start rather than a
+        # recursive walk over checkouts and uploads. The full `chown -R` runs
+        # only on a volume that actually needs it, which is a first boot or an
+        # upgrade from a root-running image. One level deep is enough BECAUSE
+        # the wrongly-owned entries are the top-level directories themselves —
+        # checked against the appliance, where all six were root-owned and the
+        # root was not.
+        #
+        # The `for` list has to include the directories the CHART cannot see.
+        # `claude`, `codex`, `dev-sessions` and `model-cache` arrive as env vars
+        # below and are greppable from this file; `logs`, `media` and
+        # `voice-notes` are resolved in code from `process.cwd()` (file-sink.ts,
+        # media.ts, voice-notes.ts) and appear nowhere in the pod spec. Missing
+        # one is not fatal — the chown is recursive over whatever exists — but
+        # a fresh volume then has no such directory until something creates it,
+        # so keep the list complete. data-volume-ownership.test.ts reads both
+        # sets from their real sources and fails if a new one is added without
+        # coming through here.
+        #
+        # The mkdirs come FIRST and are covered by the same check: a directory
+        # this container creates is created root-owned, so creating them after
+        # the check would hand the app exactly the failure this is here to fix.
+        #
+        # The check fails SAFE. `|| echo unknown` means a `find` that errors —
+        # or is missing entirely on some future base image — produces a
+        # non-empty answer and takes the chown branch. The cost of being wrong
+        # that way is one slow pod start; the cost of the other way is the
+        # EACCES this container exists to prevent, on a pod that started
+        # cleanly and reported success.
+        #
+        # Uses the app's own image, not postgres.image: it is guaranteed present
+        # on the node (the app container is about to run it) and needs no pull,
+        # and it is still the right image when postgres.bundled is false.
+        - name: fix-data-ownership
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            # Explicitly root, and explicitly saying so: without
+            # runAsNonRoot: false this container inherits any pod-level
+            # runAsNonRoot a hardened values override adds and fails to start.
+            runAsUser: 0
+            runAsNonRoot: false
+            allowPrivilegeEscalation: false
+            # Root for one chown, not root for everything: CHOWN changes the
+            # ownership, DAC_OVERRIDE lets mkdir into a root-owned directory,
+            # FOWNER covers the chown of directories this uid does not own.
+            capabilities:
+              drop: [ALL]
+              add: [CHOWN, DAC_OVERRIDE, FOWNER]
+            seccompProfile: { type: RuntimeDefault }
+          command:
+            - sh
+            - -c
+            - >-
+              set -eu;
+              for d in dev-sessions claude codex logs model-cache media voice-notes voice-clones;
+              do mkdir -p "/app/data/$d"; done;
+              if [ -z "$(find /app/data -maxdepth 1 ! -uid 1000 -print -quit 2>/dev/null || echo unknown)" ];
+              then echo "fix-data-ownership: /app/data already owned by uid 1000, nothing to do";
+              else echo "fix-data-ownership: /app/data is not owned by uid 1000, chowning (one-off)";
+              chown -R 1000:1000 /app/data;
+              fi
+          volumeMounts:
+            - name: data
+              mountPath: /app/data
+        {{- end }}
+        {{- if .Values.postgres.bundled }}
+        - name: wait-for-postgres
+          image: {{ .Values.postgres.image }}
+          command:
+            - sh
+            - -c
+            - >-
+              until pg_isready -h {{ include "talon-control.postgresHost" . }} -p 5432 -U {{ .Values.postgres.user | quote }};
+              do echo "waiting for postgres"; sleep 2; done
+        {{- end }}
+      {{- end }}
+      # fsGroup on the POD (not the container): the image runs as the non-root
+      # `node` user (Dockerfile's `USER node`, uid/gid 1000 from the
+      # node:24-bookworm-slim base) with no root user left to self-chown a
+      # freshly provisioned volume the way postgres.yaml's container does. Most
+      # CSI provisioners create a PVC's root directory owned by root, so without
+      # this, every write under /app/data — media uploads, the speech-model
+      # cache, dev-session checkouts — fails EACCES the moment a fresh volume
+      # gets mounted. fsGroup makes kubelet chgrp the volume to this group (and
+      # new files inherit it) before the container starts.
+      #
+      # It is necessary and NOT sufficient. kubelet applies fsGroup only to
+      # volume plugins whose mounter reports `Managed: true`; `hostPath` reports
+      # false, deliberately, because chgrp'ing an arbitrary host path is not
+      # kubelet's to do. Every hostPath-backed provisioner therefore ignores this
+      # field without warning — including MicroK8s `hostpath-storage`, which is
+      # what this appliance runs on. The `fix-data-ownership` init container
+      # above is what makes the guarantee hold on those clusters; keep both,
+      # because fsGroup is still what gives NEW files the right group on the CSI
+      # drivers that do honour it.
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: talon-control
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          # Matches the Dockerfile's `USER node` (security review: the image
+          # previously ran as root; capability-dropping was defence-in-depth on
+          # TOP of that, not instead of runAsNonRoot). runAsNonRoot here is a
+          # declarative check, not what makes it non-root — the image's own USER
+          # directive does that; this just fails loudly if that ever regresses.
+          #
+          # runAsUser must be stated NUMERICALLY alongside it, and dropping it
+          # is not a tidy-up: runAsNonRoot cannot verify a named user. With
+          # `USER node` and no runAsUser, kubelet has only the string "node"
+          # from the image config, refuses to guess whether it is uid 0, and
+          # fails the container to CreateContainerConfigError — "container has
+          # runAsNonRoot and image has non-numeric user (node), cannot verify
+          # user is non-root". The pod never starts, and the check meant as a
+          # safety net is what stops it. 1000 is the `node` account in the
+          # node:24-bookworm-slim base, and must stay in step with
+          # podSecurityContext.fsGroup above and the chown in the Dockerfile.
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
+            seccompProfile: { type: RuntimeDefault }
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.port }}
+          envFrom:
+            - secretRef:
+                name: {{ include "talon-control.secretName" . }}
+          env:
+            - name: NEXTAUTH_URL
+              value: {{ .Values.config.nextauthUrl | default (printf "http://localhost:%v" .Values.service.port) | quote }}
+            - name: LOG_FORMAT
+              value: {{ .Values.config.logFormat | quote }}
+            {{- with .Values.config.labsUrl }}
+            - name: TALON_LABS_URL
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.config.licenseRefreshUrl }}
+            - name: TALON_CONTROL_LICENSE_REFRESH_URL
+              value: {{ . | quote }}
+            {{- end }}
+            {{- if .Values.config.trustProxy }}
+            - name: TALON_TRUST_PROXY
+              value: "true"
+            {{- end }}
+            # Dev Sessions state, on the /app/data volume. All three dirs
+            # default to $HOME (~/.claude, ~/.codex, ~/.talon-control/dev-sessions)
+            # — inside a container that is the writable layer, so a restart
+            # takes the transcript `resume` needs along with the checkout.
+            # Pointed here they match docker-compose, where the same dirs
+            # already live on the data volume. LOG_DIR needs no entry: its
+            # default is <cwd>/data/logs, which this mount already makes durable.
+            - name: CLAUDE_CONFIG_DIR
+              value: /app/data/claude
+            - name: CODEX_HOME
+              value: /app/data/codex
+            - name: TALON_DEV_SESSIONS_DIR
+              value: /app/data/dev-sessions
+            # Same problem, same volume, for the local speech models: Kokoro and
+            # Whisper (~130MB together) are pulled from Hugging Face on first
+            # use and cached inside the runtime's own package directory, so a
+            # pod restart re-downloads them and the assistant speaks in the
+            # browser voice meanwhile. The compose files mount a dedicated
+            # volume; here the existing data claim already outlives the pod.
+            - name: TALON_CONTROL_SPEECH_CACHE_DIR
+              value: /app/data/model-cache
+            # Cloning samples: the same data claim, same reasoning as the
+            # model cache above — these are recordings of real people that must
+            # survive a pod restart, and re-recording everyone's voice because
+            # a node drained is not a recovery story.
+            - name: VOICE_CLONE_STORE_DIR
+              value: /app/data/voice-clones
+            {{- if .Values.signing.enabled }}
+            - name: TALON_CONTROL_SIGNING_KEY_PATH
+              value: /secrets/license-signing-private.pem
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          volumeMounts:
+            - name: data
+              mountPath: /app/data
+            {{- if .Values.signing.enabled }}
+            - name: signing
+              mountPath: /secrets
+              readOnly: true
+            {{- end }}
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          # Readiness gates traffic on Postgres being reachable; liveness only
+          # asks whether the process is up. Probing /login conflated the two —
+          # it renders fine with a dead database, so a broken pod stayed in the
+          # Service, and any auth/redirect change silently became a probe change.
+          readinessProbe:
+            httpGet:
+              path: /api/health/ready
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
+          # A dev session's pnpm install/build runs in THIS pod, next to the web
+          # server — it is not a separate pod, see the `resources` comment below.
+          # The default 1s httpGet timeout and 3-strike failureThreshold gave a
+          # CPU-starved-but-alive process (a node install pegging the core the
+          # event loop needs) only ~60-80s before Kubernetes killed and restarted
+          # the whole pod mid-dev-session, which reads as "the session is stuck"
+          # when what actually happened is it lost its checkout's install and had
+          # to start over. /api/health/live does no I/O — a slow reply here means
+          # the event loop is busy, not that the process is dead — so this widens
+          # the grace window to ~2 minutes at a 5s per-probe timeout before
+          # concluding that.
+          livenessProbe:
+            httpGet:
+              path: /api/health/live
+              port: http
+            initialDelaySeconds: 40
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 6
+          {{- with .Values.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        - name: data
+          {{- if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "talon-control.dataClaimName" . }}
+          {{- else }}
+          # persistence.enabled=false: log history and dev sessions live only as
+          # long as the pod does. Deliberately still a volume so the paths are
+          # identical either way and nothing has to branch on it.
+          emptyDir: {}
+          {{- end }}
+        {{- if .Values.signing.enabled }}
+        - name: signing
+          secret:
+            secretName: {{ .Values.signing.existingSecret | default (printf "%s-signing" (include "talon-control.fullname" .)) }}
+        {{- end }}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

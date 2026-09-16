@@ -1,0 +1,30 @@
+apiVersion: v2
+name: talon-control
+description: >-
+  Talon Control — the operations console and AI-agent workboard for running
+  Talon Labs. Ships the AI agent fleet, the workboard with human approval, and
+  the Company Brain knowledge graph. Bundles Postgres for a one-command start,
+  or points at an external database.
+type: application
+# 0.4.0, not 0.3.2: the chart this succeeds carried the SearXNG, Kokoro, Vexa
+# and voice-cloning stacks, and this one renders none of them. Anyone upgrading
+# from 0.3.x loses those workloads, which is a minor-version change, not a patch.
+version: 0.4.0
+# Bare semver — the tag the registry actually has. Publishing a release pushes
+# both this and the v-prefixed git tag (.github/workflows/docker-publish.yml),
+# and values.yaml's empty image.tag resolves to this one.
+appVersion: "1.0.0-beta.1"
+kubeVersion: ">=1.25.0-0"
+# `helm show chart` prints both of these, so they have to be openable by whoever
+# runs it. That rules out the product repositories, which are private — the
+# chart's own source lives in the public Talon-Deploy mirror instead.
+home: https://www.talonlabs.dev/deploy
+sources:
+  - https://github.com/Talon-Labs-Detection-Platform/Talon-Deploy
+maintainers:
+  - name: Talon Labs
+keywords:
+  - talon
+  - operations
+  - ai-agents
+  - nextjs

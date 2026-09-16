@@ -1,0 +1,24 @@
+# cp terraform.tfvars.example terraform.tfvars, then fill in and `terraform apply`.
+# Authenticate first: `az login`.
+# Read ../../README.md first — ../../vm/azure is the cheaper, simpler shape.
+
+domain      = "studio.example.com"
+admin_email = "you@example.com"
+image_tag     = "v1.0.0"
+chart_version = "1.0.0"
+
+# Who may reach the AKS API server. No default on purpose.
+admin_cidrs = ["1.2.3.4/32"]
+
+location = "uksouth"
+
+# Install an ingress controller and cert-manager BEFORE applying, then name the
+# Secret your Certificate writes.
+ingress_class   = "nginx"
+tls_secret_name = "talon-studio-tls"
+
+node_count            = 2
+node_size             = "Standard_D2s_v5"
+db_sku                = "B_Standard_B1ms"
+backup_retention_days = 14
+disk_size_gb          = 40

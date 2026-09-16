@@ -1,0 +1,69 @@
+Talon Control is deploying.
+
+Release:   {{ .Release.Name }}
+Namespace: {{ .Release.Namespace }}
+Image:     {{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}
+Database:  {{ if .Values.postgres.bundled }}bundled Postgres ({{ include "talon-control.postgresHost" . }}){{ else }}external{{ end }}
+
+Migrations run automatically when the app pod boots. Watch it come up:
+
+  kubectl -n {{ .Release.Namespace }} rollout status deploy/{{ include "talon-control.fullname" . }}
+
+{{- if .Values.ingress.enabled }}
+
+Open it at:
+
+  http{{ if .Values.ingress.tls }}s{{ end }}://{{ .Values.ingress.host }}
+{{- else }}
+
+No ingress is enabled. Reach it with a port-forward:
+
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "talon-control.fullname" . }} {{ .Values.service.port }}:{{ .Values.service.port }}
+  # then open http://localhost:{{ .Values.service.port }}
+{{- end }}
+
+{{- if not .Values.secrets.adminEmail }}
+
+First run: visit /setup to create the admin account (no admin was seeded).
+{{- else }}
+
+First run: sign in as {{ .Values.secrets.adminEmail }} with the password you set.
+{{- end }}
+
+{{- if not .Values.signing.enabled }}
+
+License-key minting is disabled (no signing key configured). The console runs
+fine; set signing.enabled=true with a key to enable it.
+{{- end }}
+
+{{- if not .Values.persistence.enabled }}
+
+WARNING: persistence.enabled=false. /app/data is an emptyDir, so the App Logs
+history is lost on every restart and dev sessions cannot resume afterwards —
+their Claude transcripts and git checkouts go with the pod.
+{{- end }}
+
+{{- if .Values.config.labsUrl }}
+
+Traffic: the pageview beacon accepts POSTs from {{ .Values.config.labsUrl }}
+(a website saved under Settings -> Company overrides this).
+{{- if not .Values.config.trustProxy }}
+config.trustProxy is false, so client IPs are not read from the ingress —
+pageviews will count, but unique visitors and the country map stay at zero.
+Set config.trustProxy=true when the app sits behind an ingress.
+{{- end }}
+{{- else }}
+
+Traffic: config.labsUrl is unset, so the pageview beacon only accepts the app
+default origin (https://talon.studio) — unless an admin has saved a website
+under Settings -> Company, which wins over both. Set either for the
+Marketing -> Traffic page to record pageviews.
+{{- end }}
+
+{{- if not (or .Values.devSessions.oauthToken .Values.devSessions.anthropicApiKey .Values.secrets.existingSecret) }}
+
+Dev Sessions (Command → Dev Sessions) has no credential and every session will
+fail on its first turn. Set devSessions.oauthToken (from `claude setup-token`,
+bills your Claude subscription) or devSessions.anthropicApiKey (metered). The
+agent fleet is unaffected — it uses the AI connection in Settings → AI.
+{{- end }}

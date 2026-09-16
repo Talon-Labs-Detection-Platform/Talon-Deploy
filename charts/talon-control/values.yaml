@@ -1,0 +1,267 @@
+# Talon Control — Helm values.
+#
+# Quick start:
+#   helm install talon-control ./helm/talon-control \
+#     --set secrets.authSecret=$(openssl rand -hex 32) \
+#     --set secrets.encryptionKey=$(openssl rand -hex 32) \
+#     --set secrets.adminEmail=you@example.com \
+#     --set secrets.adminPassword='<strong-password>' \
+#     --set postgres.password=$(openssl rand -hex 24)
+#
+# SCOPE: the console and its database, and nothing else. The optional sidecars
+# — SearXNG, the Kokoro speech engine, the Vexa meeting gateway, the voice
+# cloning engine — are Docker Compose profiles only, and this chart does not
+# render them. That is deliberate. The chart this one replaces carried all four,
+# reached 3,031 lines, drifted against compose in exactly those stacks (it
+# shipped four duplicate `voiceClone:` keys and four duplicate `searxng:` keys,
+# each silently overriding the last), and was retired on 2026-09-13 for that
+# reason. Keeping the chart to the one path every deployment needs is what keeps
+# it honest; on Kubernetes, run a sidecar as its own release and point the app
+# at it through `extraEnv`.
+extraEnv: []
+extraVolumes: []
+extraVolumeMounts: []
+
+image:
+  repository: ghcr.io/talon-labs-detection-platform/talon-control
+  # Defaults to the chart's appVersion when empty — a bare semver like 1.0.0,
+  # NOT the v-prefixed git tag. Publishing a release pushes both spellings for
+  # exactly this reason (.github/workflows/docker-publish.yml, "Set image
+  # tags"); before the first release of a given version, only `latest` and
+  # `sha-…` exist, and leaving this empty resolves to a tag the registry does
+  # not have. The appliance sidesteps it entirely by pinning `tag: local`.
+  tag: ""
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+# The app image runs as the `node` user (uid/gid 1000, the node:24-bookworm-
+# slim base image's built-in account) with no root left inside the container
+# to chown a volume itself. fsGroup is what makes the /app/data PVC writable
+# by that user: most storage provisioners create a fresh volume root-owned,
+# and without this every write under it — media uploads, the speech-model
+# cache, dev-session checkouts — fails EACCES. Change this only if you build
+# a custom image with a different uid.
+podSecurityContext:
+  fsGroup: 1000
+  # Skip the recursive chgrp once the volume's root already carries this
+  # group. /app/data can grow large (checkouts, uploaded media) and a full
+  # walk on every pod restart would slow down every rollout for no further
+  # effect after the first one fixes it.
+  fsGroupChangePolicy: OnRootMismatch
+
+# Single-instance appliance: migrations run on boot, so keep this at 1 unless
+# you move migrations to a pre-upgrade Job. This is also a security boundary,
+# not just a migration one — login/MFA/MCP-token rate limiting
+# (lib/rate-limit.ts) is an in-process counter with no shared store, so a
+# second replica gives every throttle its own independent budget and the
+# effective limit multiplies by replica count. Back it with Postgres/Redis
+# before ever running more than one.
+#
+# This is enforced, not advised: templates/deployment.yaml calls `fail` above 1,
+# so helm install/upgrade refuses rather than silently multiplying every
+# throttle. 0 still renders, for the
+# scale-to-zero maintenance step.
+replicaCount: 1
+
+nameOverride: ""
+fullnameOverride: ""
+
+service:
+  type: ClusterIP
+  port: 3001
+  # Fixed node port, for type NodePort/LoadBalancer only. Set this whenever
+  # something OUTSIDE the cluster reaches the console at a hard-coded address —
+  # a reverse proxy's upstream, a firewall rule, a bookmark. Left empty
+  # Kubernetes allocates a random port from 30000-32767 and picks a NEW one on
+  # a type change, so an upgrade silently moves the console out from under
+  # whatever was pointing at it.
+  #
+  # This is not hypothetical: an appliance reached through a host reverse proxy
+  # on a fixed nodePort went down for an hour because a `helm upgrade` re-read
+  # `type: ClusterIP` from these defaults — the port was live in the cluster
+  # but recorded in nobody's values, so the first successful apply erased it.
+  # If your deployment depends on a specific port, it belongs here, in the file
+  # the upgrade reads, not only in the cluster.
+  nodePort: ""
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  host: talon-control.local
+  tls: false
+  # Defaults to "<release>-talon-control-tls" when empty.
+  tlsSecretName: ""
+
+config:
+  # Public URL the app is served on. Required behind an ingress/proxy for auth
+  # to work (e.g. https://control.example.com). Defaults to the in-cluster URL.
+  nextauthUrl: ""
+  # Public origin of the Talon Labs site (e.g. https://www.talonlabs.dev).
+  # Two things hang off it: published blog posts record their live URL against
+  # it, and the public pageview beacon (/api/public/traffic) accepts POSTs from
+  # exactly this origin and 403s every other — so the Marketing → Traffic page
+  # stays at zero until this matches the URL Labs is actually served on. Empty
+  # uses the app default (https://talon.studio).
+  labsUrl: ""
+  # Where this instance's own Control licence talks to Talon Labs. One address
+  # does three jobs: a key pasted under Settings -> License is activated
+  # against your account through it, a subscription key renews itself through
+  # it, and the instance confirms its key there afterwards. Control derives
+  # the activate and release routes from it by dropping the trailing /refresh,
+  # so point it at the refresh route, never at the site root. The default is
+  # Talon Labs, the same default docker-compose.prod.yml carries. Set it to ""
+  # and the variable is not rendered at all: a pasted key still verifies and
+  # still runs to its expiry, but nothing renews it, nothing binds it to this
+  # server, and each renewed key has to be pasted by hand.
+  licenseRefreshUrl: https://talonlabs.dev/api/license/refresh
+  # Trust X-Forwarded-For / X-Real-IP from the ingress in front of the app.
+  # The traffic page needs it: without a trusted client IP the unique-visitor
+  # and country metrics never increment, and rate limiting collapses to one
+  # shared bucket. Only enable behind a proxy that overwrites those headers
+  # itself (an ingress does) — never on a pod reachable directly.
+  trustProxy: false
+  # Log output: "text" (human) or "json" (aggregators).
+  logFormat: json
+
+# App secrets. Either set the values below (rendered into a Secret) or point at
+# an existing Secret you manage yourself.
+secrets:
+  # If set, this Secret must provide AUTH_SECRET, TALON_CONTROL_ENCRYPTION_KEY,
+  # and TALON_CONTROL_POSTGRES_URL (plus optional TALON_CONTROL_ADMIN_* and the
+  # devSessions credentials below — the chart renders no Secret at all in this
+  # mode, so anything it would have written is yours to provide).
+  existingSecret: ""
+  authSecret: "" # openssl rand -hex 32
+  encryptionKey: "" # openssl rand -hex 32
+  # Optional first-boot admin. When empty, /setup creates the admin on first run.
+  adminEmail: ""
+  adminPassword: ""
+
+# Durable app state, mounted at /app/data. This is not optional the way a cache
+# is: three separate features write here and each of them silently degrades to
+# "works until the pod restarts" without it.
+#
+#   /app/data/logs          App Logs → History (LOG_DIR's default is <cwd>/data/logs)
+#   /app/data/claude        Claude Code transcripts — what `resume` reads
+#   /app/data/codex         Codex thread state — the same role, for Codex sessions
+#   /app/data/dev-sessions  the git checkouts dev sessions work in
+#   /app/data/media         the media library's file bytes (Assets page) — the
+#                           DB keeps the rows, so losing this volume leaves
+#                           uploads permanently 404 (seeded assets self-heal)
+#
+# Left as an emptyDir the console still runs, but every pod restart loses the
+# log history and orphans every dev session: the transcript Claude resumes from
+# is gone, so the next message on an existing session fails rather than
+# continuing it. Deployment strategy here is Recreate, so an upgrade is a
+# restart.
+persistence:
+  enabled: true
+  storage: 20Gi
+  storageClassName: ""
+  # Chown /app/data to uid 1000 in a short root init container before the app
+  # starts, instead of trusting podSecurityContext.fsGroup above to have done
+  # it. Both are needed: fsGroup is silently ignored by every hostPath-backed
+  # provisioner (kubelet only applies it to volume plugins that report
+  # themselves ownership-managed, and hostPath does not) — which covers MicroK8s
+  # `hostpath-storage`, where the symptom is EACCES on a pod spec that reads
+  # perfectly. Turn this off only where a Pod Security Standard forbids the
+  # root init container, and then chown the volume yourself.
+  fixOwnership: true
+  # A PVC you created outside the release — same reasoning as
+  # postgres.existingClaim. Leave empty to let the chart manage the claim
+  # (annotated resource-policy: keep either way).
+  existingClaim: ""
+
+# Dev Sessions — the Claude Code and Codex engines (Command → Dev Sessions).
+# Distinct from the agent fleet, which bills the AI connection configured in
+# Settings → AI and needs nothing here. Without credentials for an engine, the
+# page loads but every session on it fails on its first turn, because the
+# subprocess has no way to authenticate. See docs/dev-sessions.md.
+devSessions:
+  # From `claude setup-token` on a machine where you are logged in. Bills your
+  # Claude subscription rather than the API; lasts about a year. Server-side
+  # only — it is effectively your Claude account.
+  oauthToken: ""
+  # Metered API usage instead. Only one of the two is needed; the OAuth token
+  # wins when both are set.
+  anthropicApiKey: ""
+  # Codex's equivalent of oauthToken: mint with `codex login` on a machine
+  # where you are signed in, or an enterprise access token. Bills your
+  # Codex/ChatGPT subscription. Server-side only.
+  codexAccessToken: ""
+  # Codex's equivalent of anthropicApiKey — metered API usage. Only one of the
+  # two Codex credentials is needed; the access token wins when both are set.
+  openaiApiKey: ""
+
+# Ed25519 license-signing key. Optional — without it the console runs but license
+# minting is disabled. Mounted read-only at /secrets/license-signing-private.pem.
+signing:
+  enabled: false
+  # Secret containing key "license-signing-private.pem". Takes precedence.
+  existingSecret: ""
+  # Or paste the PEM here to have the chart render the Secret.
+  privateKeyPem: ""
+
+# Database. Bundle a simple in-cluster Postgres for a fast start, or point at an
+# external managed database (RDS, Cloud SQL, …).
+postgres:
+  bundled: true
+
+  # --- bundled Postgres (used when bundled=true) ---
+  image: postgres:16-alpine@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685
+  user: talon
+  # REQUIRED — no default. The chart used to ship "talon" here, which the
+  # bundled Postgres and every connection URL silently took: any pod in the
+  # cluster reached the database (the ledger, the user table's bcrypt/MFA
+  # secrets, every v2: ciphertext) as talon/talon. Generate one
+  # (openssl rand -hex 24) and set it via --set/values, OR reference an existing
+  # Secret with passwordSecret below. It binds at first init; rotating it later
+  # is a manual ALTER ROLE, so pick it before the first deploy.
+  password: ""
+  # Instead of an inline password, source POSTGRES_PASSWORD from an existing
+  # Secret — for the same reason authSecret/encryptionKey can (a Deployment body
+  # is readable by anyone who can `get pod`). When name is set it wins over the
+  # inline password for the bundled pod. The app's own connection URL still comes
+  # from secrets.existingSecret in that flow, so its password must match this key.
+  passwordSecret:
+    name: ""
+    key: POSTGRES_PASSWORD
+  database: talon_control
+  storage: 8Gi
+  storageClassName: ""
+  resources:
+    requests: { cpu: 50m, memory: 128Mi }
+    limits: { memory: 1Gi }
+
+  # Restrict who may reach the bundled Postgres on 5432. With a NetworkPolicy
+  # -aware CNI this admits only the app pods; without one it is inert (no CNI, no
+  # enforcement — it never blocks the app). Turn off only if a NetworkPolicy for
+  # 5432 is managed outside the release.
+  networkPolicy:
+    enabled: true
+
+  # Point at a PVC you created yourself, outside this release. Recommended for
+  # any instance holding real data: the volume then has no lifecycle relationship
+  # to the chart at all, so uninstall/reinstall cycles cannot touch it and a
+  # retained claim cannot collide with the next install. Leave empty to let the
+  # chart manage the claim (it is annotated resource-policy: keep either way).
+  existingClaim: ""
+
+  # --- external Postgres (used when bundled=false) ---
+  external:
+    # postgresql://user:pass@host:5432/talon_control
+    url: ""
+
+# Sized for the app pod, which is also where a dev session's pnpm install and
+# build run — hence the ephemeral-storage request, which a checkout plus a
+# node_modules tree will otherwise exhaust on a node with a small image filesystem.
+resources:
+  requests: { cpu: 100m, memory: 512Mi, ephemeral-storage: 4Gi }
+  # Memory limit caps a runaway pod so it can't exhaust the node. No CPU limit,
+  # which would only throttle builds/migrations.
+  limits: { memory: 6Gi }
+podAnnotations: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}

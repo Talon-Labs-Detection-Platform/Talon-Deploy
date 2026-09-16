@@ -1,0 +1,89 @@
+# Production overrides for the Talon Control chart.
+#
+#   helm install talon-control ./helm/talon-control \
+#     -f helm/talon-control/values-production.yaml \
+#     --set secrets.existingSecret=talon-control-secrets \
+#     --set ingress.host=control.example.com
+#
+# The point of this file is that it supplies no secrets and no defaults that
+# could become one. Everything sensitive comes from a Secret you created
+# yourself, so nothing credential-shaped is ever committed, rendered into a
+# release, or readable from `helm get values`.
+
+# One Secret, yours, holding every credential the app reads:
+#   AUTH_SECRET                    openssl rand -hex 32
+#   TALON_CONTROL_ENCRYPTION_KEY   openssl rand -hex 32 — ESCROW THIS BEFORE
+#                                  FIRST BOOT. It decrypts every stored
+#                                  credential (AI keys, GitHub App key, SMTP,
+#                                  licence keys). Lose it and a restored
+#                                  database does not help: what is in it is
+#                                  ciphertext.
+#   TALON_CONTROL_POSTGRES_URL     postgresql://user:pass@host:5432/talon_control
+#   TALON_CONTROL_ADMIN_EMAIL      optional; omit and /setup seeds the admin
+#   TALON_CONTROL_ADMIN_PASSWORD   optional, with the above
+#
+# With existingSecret set the chart renders no Secret at all, so anything it
+# would have written is yours to provide.
+secrets:
+  existingSecret: ""
+
+# Managed Postgres, not the bundled pod. A bundled StatefulSet on one node has
+# no backup story, no point-in-time recovery, and no failover; every cloud this
+# chart is likely to run on sells a managed Postgres that has all three.
+postgres:
+  bundled: false
+  external:
+    # Set via --set or a values file you do not commit. The chart reads it only
+    # when secrets.existingSecret is empty; otherwise put
+    # TALON_CONTROL_POSTGRES_URL in that Secret and leave this blank.
+    url: ""
+
+persistence:
+  enabled: true
+  storage: 50Gi
+  # Name your cluster's class rather than taking the default: the default on a
+  # managed cluster is frequently a delete-on-release class, which is the wrong
+  # lifecycle for the volume holding App Logs history and dev-session checkouts.
+  storageClassName: ""
+  # A claim created outside the release, so uninstall/reinstall cannot reach it.
+  existingClaim: ""
+
+ingress:
+  enabled: true
+  className: nginx
+  host: control.example.com
+  annotations:
+    # Dev-session output and the SSE run bus stream; a proxy that buffers them
+    # turns a live workboard into one that updates in bursts at the read
+    # timeout. These are nginx spellings — translate for another controller.
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+  # A boolean in this chart, not a list: the host above is the only one, and the
+  # certificate Secret is named separately below.
+  tls: true
+  # Empty resolves to "<release>-talon-control-tls". Name the Secret your
+  # cert-manager Certificate (or your manual import) actually writes.
+  tlsSecretName: ""
+
+config:
+  # Must match what the ingress serves, scheme included, or auth redirects land
+  # on the wrong origin and sign-in loops.
+  nextauthUrl: https://control.example.com
+  # Every request arrives from the ingress, so without this per-IP rate limiting
+  # collapses to ONE bucket for the whole internet — anyone can 429 your own
+  # login — and the traffic subsystem can never derive a visitor hash, so unique
+  # visitors and geo read zero permanently. Only safe because an ingress is in
+  # front; leave it false if the Service is ever exposed directly, where the
+  # header is attacker-controlled.
+  trustProxy: true
+  logFormat: json
+
+# NOTE: the chart's only NetworkPolicy guards the BUNDLED Postgres, so with
+# postgres.bundled=false above it renders nothing. Reaching a managed database
+# is a matter for the cluster's egress rules and the database's own firewall —
+# put the app's node/pod CIDR on the allow list there, not here.
+
+resources:
+  requests: { cpu: 500m, memory: 1Gi, ephemeral-storage: 8Gi }
+  limits: { memory: 8Gi }

@@ -1,0 +1,26 @@
+{{- if and .Values.persistence.enabled (not .Values.persistence.existingClaim) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "talon-control.dataClaimName" . }}
+  labels:
+    {{- include "talon-control.labels" . | nindent 4 }}
+    app.kubernetes.io/component: app
+  annotations:
+    # Not a cache. This volume holds the App Logs history, the Claude Code
+    # transcripts every dev session resumes from, and the git checkouts those
+    # sessions have uncommitted work in. A `helm uninstall` must not take it.
+    helm.sh/resource-policy: keep
+spec:
+  accessModes:
+    # ReadWriteOnce matches the single-replica appliance. Moving to more than
+    # one app pod means ReadWriteMany and a storage class that supports it —
+    # two pods cannot share a checkout on a RWO volume.
+    - ReadWriteOnce
+  {{- with .Values.persistence.storageClassName }}
+  storageClassName: {{ . }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.persistence.storage }}
+{{- end }}

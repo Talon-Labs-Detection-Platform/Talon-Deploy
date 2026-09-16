@@ -1,0 +1,28 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "talon-studio.fullname" . }}-config
+  labels:
+    {{- include "talon-studio.labels" . | nindent 4 }}
+data:
+  TALON_DATA_DIR: /data
+  POSTGRES_DB: {{ .Values.config.postgresDatabase | quote }}
+  POSTGRES_USER: {{ .Values.config.postgresUser | quote }}
+  POSTGRES_PORT: {{ .Values.config.postgresPort | quote }}
+  SIGMA_PORT: {{ .Values.config.sigmaPort | quote }}
+  SIGMA_SERVICE_URL: "http://127.0.0.1:{{ .Values.config.sigmaPort }}"
+  GIT_STORAGE_PATH: /data/repos
+  SECURITY_CONTENT_PATH: /data/security_content
+  SIGMA_RULES_PATH: /data/sigma
+  ATOMIC_RED_TEAM_PATH: /data/atomic-red-team
+  LOG_DIR: {{ .Values.config.logDir | quote }}
+  TALON_UPLOADS_DIR: {{ .Values.config.uploadsDir | quote }}
+  {{- if or .Values.postgres.external .Values.postgres.externalUrl }}
+  TALON_DISABLE_EMBEDDED_PG: "true"
+  {{- end }}
+  NEXTAUTH_URL: {{ .Values.config.nextauthUrl | quote }}
+  AUTH_TRUST_HOST: {{ .Values.config.authTrustHost | quote }}
+  SELF_HOSTED_COMMUNITY_MAX_STREAMS: {{ .Values.config.communityMaxStreams | quote }}
+  SELF_HOSTED_COMMUNITY_MAX_DETECTIONS: {{ .Values.config.communityMaxDetections | quote }}
+  DISABLE_DETECTION_CONTENT_SYNC: {{ .Values.config.disableContentSync | quote }}
+  TALON_LLM_GATEWAY_URL: {{ .Values.config.llmGatewayUrl | quote }}

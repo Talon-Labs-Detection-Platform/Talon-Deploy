@@ -1,0 +1,36 @@
+{{- if and .Values.postgres.bundled .Values.postgres.networkPolicy.enabled }}
+# Who may reach the bundled Postgres on 5432. Without this, the
+# ClusterIP service is reachable from every pod in the cluster — including the
+# tenant Studio releases this chart provisions into the same cluster — as the
+# database superuser. This admits ONLY the app pods (the dev-session engine runs
+# inside the app container, so it is covered); everything else is denied once a
+# NetworkPolicy selects the pod.
+#
+# Requires a NetworkPolicy-aware CNI (Calico, Cilium, …). With a CNI that does
+# not enforce them the object is inert — it never blocks the app — so this is
+# safe to ship on by default; disable it only when a policy for 5432 is managed
+# outside the release.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "talon-control.postgresHost" . }}
+  labels:
+    {{- include "talon-control.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgres
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "talon-control.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: postgres
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "talon-control.selectorLabels" . | nindent 14 }}
+              app.kubernetes.io/component: app
+      ports:
+        - protocol: TCP
+          port: 5432
+{{- end }}

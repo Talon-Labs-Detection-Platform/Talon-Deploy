@@ -1,0 +1,133 @@
+replicaCount: 1
+
+image:
+  repository: ghcr.io/talon-labs-detection-platform/talon-studio
+  # Empty = use the chart's appVersion (prefixed with "v"), so the chart and the
+  # appliance image release together. Pin an explicit tag here to override.
+  tag: ""
+  # Immutable image digest (e.g. "sha256:…"). Takes precedence over tag when set.
+  digest: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+# The data volume is ReadWriteOnce and the appliance embeds stateful services,
+# so the old pod must stop before the new one starts.
+strategy:
+  type: Recreate
+
+# The image requires root at container boot (chown of the mounted /data
+# volume, optional embedded-Postgres initdb) — runAsNonRoot isn't possible
+# here without splitting the entrypoint into a root-only initContainer, a
+# larger change tracked separately.
+#
+# Drop everything, then add back ONLY what docker-entrypoint.sh provably needs.
+# Dropping ALL outright leaves a root process that cannot chown, so the boot
+# sequence the comment above describes fails — the container never starts.
+# Each capability below maps to a specific line:
+#   CHOWN        chown -R talon:talon (:87), chown -R postgres:postgres (:116)
+#   FOWNER       chmod 600 on the postgres-owned pwfile (:123)
+#   SETUID/SETGID  gosu drops to talon/postgres (:69,125,143,182,202,205)
+#   DAC_OVERRIDE root touching paths it has just chowned away to talon/postgres
+# allowPrivilegeEscalation stays false: gosu lowers privilege, it does not raise
+# it, so no_new_privs does not block it — this matches docker-compose.release.yml,
+# which runs the same image under no-new-privileges:true.
+podSecurityContext:
+  seccompProfile:
+    type: RuntimeDefault
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: ["ALL"]
+    add: ["CHOWN", "DAC_OVERRIDE", "FOWNER", "SETGID", "SETUID"]
+  seccompProfile:
+    type: RuntimeDefault
+
+service:
+  type: ClusterIP
+  port: 3000
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: talon.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+persistence:
+  data:
+    enabled: true
+    size: 20Gi
+    # Empty = the cluster's default StorageClass.
+    storageClass: ""
+    # Mount a pre-created PVC instead of creating one.
+    existingClaim: ""
+
+postgres:
+  # Set external: true to disable the embedded Postgres and use an external
+  # database. Provide the connection string either as externalUrl (rendered
+  # into the chart Secret) or as a POSTGRES_URL key in secrets.existingSecret.
+  external: false
+  externalUrl: ""
+
+config:
+  nextauthUrl: http://talon.local
+  authTrustHost: "true"
+  communityMaxStreams: "3"
+  communityMaxDetections: ""
+  disableContentSync: "false"
+  logDir: /data/logs
+  uploadsDir: /data/uploads
+  llmGatewayUrl: ""
+  llmGatewayApiKey: ""
+  postgresDatabase: detections
+  postgresUser: talon
+  postgresPort: "5432"
+  sigmaPort: "8001"
+
+secrets:
+  # Name of a pre-created Secret to use instead of rendering one from the
+  # values below. It must provide the same keys the chart Secret carries
+  # (NEXTAUTH_SECRET, AUTH_SECRET, TALON_ENCRYPTION_KEY, TALON_ADMIN_*,
+  # POSTGRES_PASSWORD, TALON_METRICS_TOKEN, and POSTGRES_URL when
+  # postgres.external is true).
+  existingSecret: ""
+  nextauthSecret: replace-with-openssl-rand-hex-32
+  authSecret: replace-with-openssl-rand-hex-32
+  encryptionKey: replace-with-openssl-rand-hex-32
+  adminUsername: talon
+  adminEmail: admin@talon.local
+  adminPassword: talon
+  postgresPassword: talon
+  metricsToken: talon-local-metrics-token
+  # Signed `talon_…` offline licence key. Left empty the appliance runs as
+  # Community, which is the correct default — a tenant should come up working
+  # whether or not a key has been issued yet.
+  licenseKey: ""
+
+# Extra environment for the app container: plain k8s EnvVar / EnvFromSource lists.
+extraEnv: []
+extraEnvFrom: []
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
+  limits:
+    cpu: "1"
+    memory: 2Gi
+
+# Default-deny NetworkPolicy (ingress from anywhere in the cluster on the app
+# port; egress limited to DNS + HTTPS + Postgres). Off by default here since
+# self-hosted clusters vary widely in CNI/NetworkPolicy support — turn on for
+# any cluster that does (see values-production.yaml, which enables it).
+networkPolicy:
+  enabled: false
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

@@ -1,0 +1,16 @@
+Talon Studio has been installed.
+
+If ingress is disabled, port-forward the app:
+
+  kubectl port-forward svc/{{ include "talon-studio.fullname" . }} 3000:{{ .Values.service.port }}
+
+Then open:
+
+  http://localhost:3000
+
+Default first-run credentials are controlled by:
+
+  secrets.adminUsername
+  secrets.adminPassword
+
+Change default secrets before exposing Talon Studio to a network.

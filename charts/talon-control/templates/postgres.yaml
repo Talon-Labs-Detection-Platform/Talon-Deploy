@@ -1,0 +1,128 @@
+{{- if .Values.postgres.bundled }}
+{{- if not .Values.postgres.existingClaim }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "talon-control.postgresHost" . }}
+  labels:
+    {{- include "talon-control.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgres
+  annotations:
+    # This volume is the entire Control database — ledger, CRM, Workboard, Company
+    # Brain, agent history and the encrypted licence keys. A `helm uninstall` must
+    # never take it. For anything you cannot lose, prefer postgres.existingClaim
+    # and create the PVC outside the release entirely, the way Talon-Dev applies
+    # k8s/data.yaml outside Tilt's lifecycle.
+    helm.sh/resource-policy: keep
+spec:
+  accessModes:
+    - ReadWriteOnce
+  {{- with .Values.postgres.storageClassName }}
+  storageClassName: {{ . }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.postgres.storage }}
+---
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "talon-control.postgresHost" . }}
+  labels:
+    {{- include "talon-control.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgres
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "talon-control.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: postgres
+  template:
+    metadata:
+      labels:
+        {{- include "talon-control.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: postgres
+    spec:
+      # This pod never talks to the Kubernetes API — don't mount a token for it.
+      automountServiceAccountToken: false
+      # docker-entrypoint burns the default 30s grace draining the app before
+      # pg_ctl gets a "fast stop", so a short grace period SIGKILLs Postgres on
+      # every rollout. See docs/homelab-platform-plan.md.
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: postgres
+          image: {{ .Values.postgres.image }}
+          # No cap-drop / runAsNonRoot: the postgres entrypoint starts as root
+          # to chown PGDATA and gosu-drops to the postgres user. seccomp is the
+          # safe hardening available here.
+          securityContext:
+            seccompProfile: { type: RuntimeDefault }
+          ports:
+            - name: postgres
+              containerPort: 5432
+          env:
+            - name: POSTGRES_USER
+              value: {{ .Values.postgres.user | quote }}
+            - name: POSTGRES_PASSWORD
+              {{- if .Values.postgres.passwordSecret.name }}
+              # Sourced from an existing Secret rather than the values/Deployment
+              # body — the app's connection URL must reference the same value.
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.postgres.passwordSecret.name | quote }}
+                  key: {{ .Values.postgres.passwordSecret.key | quote }}
+              {{- else }}
+              # Required — the chart no longer defaults this to "talon" (S-19).
+              value: {{ include "talon-control.postgresPassword" . | quote }}
+              {{- end }}
+            - name: POSTGRES_DB
+              value: {{ .Values.postgres.database | quote }}
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+            # Licence/accounting-period columns are timestamp WITHOUT time zone.
+            # The app container's image already pins TZ=UTC; Postgres must match
+            # or days-left arithmetic silently shifts with the host's BST/GMT.
+            - name: TZ
+              value: UTC
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          readinessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - {{ .Values.postgres.user | quote }}
+                - -d
+                - {{ .Values.postgres.database | quote }}
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          {{- with .Values.postgres.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ .Values.postgres.existingClaim | default (include "talon-control.postgresHost" .) }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "talon-control.postgresHost" . }}
+  labels:
+    {{- include "talon-control.labels" . | nindent 4 }}
+    app.kubernetes.io/component: postgres
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "talon-control.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+{{- end }}

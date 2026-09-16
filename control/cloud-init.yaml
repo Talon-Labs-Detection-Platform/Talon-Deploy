@@ -1,0 +1,261 @@
+#cloud-config
+# Talon Control — one-shot bootstrap for a fresh cloud VM.
+#
+# Paste this into the "user data" / "cloud-init" box any VPS provider gives you
+# when creating a server: Hetzner Cloud, DigitalOcean, Vultr, Linode, Exoscale,
+# OVH, Scaleway, AWS EC2, Azure. It is provider-neutral on purpose — the only
+# thing it needs is a Debian or Ubuntu image and outbound HTTPS.
+#
+# What you get, roughly five minutes after the machine boots: Docker, a locked
+# firewall, Caddy terminating TLS with a real certificate, Talon Control running
+# behind it on a private Postgres, and a generated set of secrets written once
+# to /root/talon-credentials.txt.
+#
+# BEFORE YOU PASTE, replace the four __PLACEHOLDER__ values below. The machine
+# will refuse to finish the install with any of them left in place rather than
+# coming up in a state you did not intend.
+#
+#   __DOMAIN__        control.example.com — an A record must already point at
+#                     this server's IP, or Caddy cannot get a certificate.
+#   __ADMIN_EMAIL__   your login, and where Let's Encrypt sends expiry warnings.
+#   __SSH_KEY__       your full public key ("ssh-ed25519 AAAA… you@laptop").
+#   __IMAGE_TAG__     a pinned release, e.g. v1.0.0-beta.1. Never a moving tag
+#                     (`latest`, `beta`, `edge`): a tag that moves makes "what is
+#                     actually running" unanswerable and rollback guesswork.
+#
+# Terraform users: cloud/terraform/self-host/vm/{aws,azure} fill these in for
+# you with `replace()` over this same file, so there is one bootstrap to keep
+# correct rather than one per provider.
+#
+# Watch it run:  ssh talon@<ip> 'sudo tail -f /var/log/talon-install.log'
+# Read secrets:  ssh talon@<ip> 'sudo cat /root/talon-credentials.txt'
+
+users:
+  - name: talon
+    groups: [docker, sudo]
+    shell: /bin/bash
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    ssh_authorized_keys:
+      - __SSH_KEY__
+
+package_update: true
+packages:
+  - ca-certificates
+  - curl
+  - ufw
+  - debian-keyring
+  - debian-archive-keyring
+  - apt-transport-https
+
+write_files:
+  # Every tunable in one place, read by the installer below. Terraform rewrites
+  # the same four tokens, so both paths configure the machine identically.
+  - path: /etc/talon/install.env
+    permissions: '0600'
+    content: |
+      TALON_DOMAIN=__DOMAIN__
+      TALON_ADMIN_EMAIL=__ADMIN_EMAIL__
+      TALON_CONTROL_IMAGE_TAG=__IMAGE_TAG__
+
+  - path: /etc/talon/install.sh
+    permissions: '0700'
+    content: |
+      #!/usr/bin/env bash
+      # Idempotent: safe to re-run after fixing whatever stopped it the first
+      # time. Every step either checks for its own result or is harmless twice.
+      set -euo pipefail
+      exec > >(tee -a /var/log/talon-install.log) 2>&1
+      echo "=== talon install $(date -Is) ==="
+
+      set -a; . /etc/talon/install.env; set +a
+
+      # Fail before touching the machine, not halfway through. A half-installed
+      # box that answers on :443 with a self-signed certificate and a default
+      # password is worse than one that never started.
+      for v in TALON_DOMAIN TALON_ADMIN_EMAIL TALON_CONTROL_IMAGE_TAG; do
+        val="${!v}"
+        case "$val" in
+          ''|__*__)
+            echo "FATAL: $v is still a placeholder ($val). Edit the cloud-init" \
+                 "before boot, or fix /etc/talon/install.env and re-run this script." >&2
+            exit 1 ;;
+        esac
+      done
+      case "$TALON_CONTROL_IMAGE_TAG" in
+        latest|beta|edge|dev|main)
+          echo "FATAL: TALON_CONTROL_IMAGE_TAG=$TALON_CONTROL_IMAGE_TAG is a moving tag." \
+               "Pin a release (v1.0.0-beta.1) so rollback is possible." >&2
+          exit 1 ;;
+      esac
+
+      # --- Docker -----------------------------------------------------------
+      if ! command -v docker >/dev/null; then
+        curl -fsSL https://get.docker.com | sh
+      fi
+      usermod -aG docker talon || true
+
+      # --- Firewall ---------------------------------------------------------
+      # 80 is open because Caddy needs the HTTP-01 challenge; it redirects to
+      # 443 for everything else. Nothing else is reachable — Postgres publishes
+      # no port at all, and the app binds loopback only (see the compose file).
+      ufw --force reset >/dev/null
+      ufw default deny incoming
+      ufw default allow outgoing
+      ufw allow OpenSSH
+      ufw allow 80/tcp
+      ufw allow 443/tcp
+      ufw --force enable
+
+      # --- Secrets ----------------------------------------------------------
+      # Generated once and never regenerated: TALON_CONTROL_ENCRYPTION_KEY
+      # decrypts every stored credential, so a second run that minted a fresh
+      # one would silently orphan everything the first run encrypted.
+      install -d -m 0750 -o talon -g talon /opt/talon-control
+      if [ ! -f /opt/talon-control/.env ]; then
+        cat > /opt/talon-control/.env <<ENV
+      TALON_CONTROL_IMAGE_TAG=$TALON_CONTROL_IMAGE_TAG
+      POSTGRES_PASSWORD=$(openssl rand -hex 24)
+      AUTH_SECRET=$(openssl rand -hex 32)
+      TALON_CONTROL_ENCRYPTION_KEY=$(openssl rand -hex 32)
+      NEXTAUTH_URL=https://$TALON_DOMAIN
+      TALON_TRUST_PROXY=true
+      ENV
+        chmod 600 /opt/talon-control/.env
+        chown talon:talon /opt/talon-control/.env
+
+        cat > /root/talon-credentials.txt <<CREDS
+      Talon Control — $TALON_DOMAIN — generated $(date -Is)
+
+      ESCROW THE ENCRYPTION KEY IN YOUR PASSWORD MANAGER NOW.
+      It encrypts every credential the console stores (AI keys, the GitHub App
+      key, SMTP, licence keys). Lose it and a restored database does not help
+      you: what is in it is ciphertext.
+
+      $(grep -E 'ENCRYPTION_KEY|AUTH_SECRET|POSTGRES_PASSWORD' /opt/talon-control/.env)
+
+      First sign-in: open https://$TALON_DOMAIN and complete /setup.
+      CREDS
+        chmod 600 /root/talon-credentials.txt
+      fi
+
+      # --- The application --------------------------------------------------
+      # Written here rather than fetched. The obvious alternative — curl the
+      # repo's docker-compose.prod.yml at the release tag — cannot work: the
+      # repository is private, so raw.githubusercontent.com answers 404 to an
+      # unauthenticated box, and putting a GitHub token in a cloud-init that
+      # every operator pastes into a provider's web form is not a trade worth
+      # making. The image itself needs no token beyond a `docker login` for a
+      # private registry.
+      #
+      # This is the core of docker-compose.prod.yml — the app and its database.
+      # The optional sidecar profiles (search, meetings, voice-clone) are not
+      # here: they are opt-in on a box that has already been sized for them.
+      # Keep the two in step by hand; test/unit/single-instance-guard.test.ts
+      # pins the one property that must never drift, on both.
+      cd /opt/talon-control
+      cat > docker-compose.yml <<'COMPOSE'
+      name: talon-control
+
+      services:
+        db:
+          image: postgres:16-alpine@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685
+          restart: unless-stopped
+          environment:
+            POSTGRES_USER: talon
+            POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+            POSTGRES_DB: talon_control
+          volumes:
+            - talon-control-pgdata:/var/lib/postgresql/data
+          healthcheck:
+            test: ['CMD-SHELL', 'pg_isready -U talon -d talon_control']
+            interval: 5s
+            timeout: 5s
+            retries: 10
+          # No published port at all: reach it with `docker compose exec`.
+          logging:
+            driver: json-file
+            options: { max-size: '10m', max-file: '3' }
+
+        # ONE instance, deliberately. The login, MFA-challenge and MCP-token
+        # throttles in lib/rate-limit.ts count in-process with no shared store,
+        # so a second container hands every throttle its own budget and the
+        # login brute-force ceiling multiplies by the container count
+        #. Scheduled automations also
+        # double-fire and the SSE bus is per-process. Never `--scale app=2`.
+        app:
+          image: ghcr.io/talon-labs-detection-platform/talon-control:${TALON_CONTROL_IMAGE_TAG:?set TALON_CONTROL_IMAGE_TAG in .env}
+          restart: unless-stopped
+          # Loopback only. Caddy on the host is the sole entry point, so a
+          # firewall slip cannot publish the console by accident.
+          ports:
+            - '127.0.0.1:3001:3001'
+          deploy:
+            replicas: 1
+          depends_on:
+            db:
+              condition: service_healthy
+          environment:
+            TALON_CONTROL_POSTGRES_URL: postgresql://talon:${POSTGRES_PASSWORD}@db:5432/talon_control
+            AUTH_SECRET: ${AUTH_SECRET:?set AUTH_SECRET in .env}
+            TALON_CONTROL_ENCRYPTION_KEY: ${TALON_CONTROL_ENCRYPTION_KEY:?set TALON_CONTROL_ENCRYPTION_KEY in .env}
+            NEXTAUTH_URL: ${NEXTAUTH_URL:?set NEXTAUTH_URL in .env}
+            TALON_TRUST_PROXY: ${TALON_TRUST_PROXY:-true}
+            AUTH_TRUST_HOST: 'true'
+            LOG_FORMAT: json
+            TALON_CONTROL_SPEECH_CACHE_DIR: /var/cache/talon/models
+            HF_HOME: /var/cache/talon/models
+            CLAUDE_CONFIG_DIR: /app/data/claude
+            CODEX_HOME: /app/data/codex
+            TALON_DEV_SESSIONS_DIR: /app/data/dev-sessions
+          volumes:
+            - talon-control-data:/app/data
+            - talon-control-models:/var/cache/talon/models
+          logging:
+            driver: json-file
+            options: { max-size: '10m', max-file: '3' }
+
+      volumes:
+        talon-control-pgdata:
+        talon-control-data:
+        talon-control-models:
+      COMPOSE
+      chown talon:talon docker-compose.yml
+      docker compose pull
+      docker compose up -d
+
+      # --- TLS --------------------------------------------------------------
+      # Caddy on the host, not in the compose file: it gets and renews the
+      # certificate on its own, and the app never has to know it is behind a
+      # proxy beyond TALON_TRUST_PROXY above.
+      if ! command -v caddy >/dev/null; then
+        curl -fsSL https://dl.cloudsmith.io/public/caddy/stable/gpg.key \
+          | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+        echo "deb [signed-by=/usr/share/keyrings/caddy-stable-archive-keyring.gpg] https://dl.cloudsmith.io/public/caddy/stable/deb/debian any-version main" \
+          > /etc/apt/sources.list.d/caddy-stable.list
+        apt-get update && apt-get install -y caddy
+      fi
+      cat > /etc/caddy/Caddyfile <<CADDY
+      $TALON_DOMAIN {
+        encode zstd gzip
+        # Dev-session output and the run bus stream over SSE. Buffering them
+        # turns a live workboard into one that updates in bursts at the read
+        # timeout, so flush straight through.
+        reverse_proxy 127.0.0.1:3001 {
+          flush_interval -1
+        }
+        tls $TALON_ADMIN_EMAIL
+      }
+      CADDY
+      systemctl reload caddy || systemctl restart caddy
+
+      echo "=== talon install complete: https://$TALON_DOMAIN ==="
+
+runcmd:
+  - [systemctl, enable, --now, docker]
+  - [/etc/talon/install.sh]
+
+final_message: |
+  Talon Control bootstrap finished after $UPTIME seconds.
+  Open https://__DOMAIN__ and complete /setup.
+  Secrets: sudo cat /root/talon-credentials.txt  (escrow the encryption key)
+  Log:     sudo cat /var/log/talon-install.log

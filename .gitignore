@@ -1,0 +1,6 @@
+# terraform init writes these; none of them belongs in a commit.
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+.terraform.lock.hcl

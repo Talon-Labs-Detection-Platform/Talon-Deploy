@@ -1,0 +1,21 @@
+{{- if and .Values.persistence.data.enabled (not .Values.persistence.data.existingClaim) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "talon-studio.fullname" . }}-data
+  labels:
+    {{- include "talon-studio.labels" . | nindent 4 }}
+  annotations:
+    # This PVC holds the tenant's git-canonical detection content, audit
+    # logs, and uploads — a `helm uninstall` must never delete it.
+    helm.sh/resource-policy: keep
+spec:
+  accessModes:
+    - ReadWriteOnce
+  {{- with .Values.persistence.data.storageClass }}
+  storageClassName: {{ . }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.persistence.data.size }}
+{{- end }}

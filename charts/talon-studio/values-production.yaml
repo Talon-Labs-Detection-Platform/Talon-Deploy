@@ -1,0 +1,106 @@
+# Production Helm values — no lab defaults. Generate secrets before install.
+replicaCount: 1
+
+image:
+  repository: ghcr.io/talon-labs-detection-platform/talon-studio
+  # Empty = the chart's appVersion (prefixed "v"); installing a pinned chart
+  # version therefore pins the image. Set an explicit tag to override.
+  tag: ""
+  # Prefer pinning the signed release digest (sha256:…) in fleet deployments.
+  digest: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+strategy:
+  type: Recreate
+
+podSecurityContext:
+  seccompProfile:
+    type: RuntimeDefault
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: ["ALL"]
+  seccompProfile:
+    type: RuntimeDefault
+
+service:
+  type: ClusterIP
+  port: 3000
+
+ingress:
+  enabled: true
+  # Matches the ingress-nginx-backed "public"/"nginx" IngressClasses on the
+  # home MicroK8s cluster (see Talon-Control/docs/homelab-platform-plan.md).
+  # Not read by Control's own tenant provisioning (lib/services/provisioning.ts
+  # builds its ingress.className from TALON_CONTROL_INGRESS_CLASS instead) —
+  # this only applies to a manual `helm install -f values-production.yaml`.
+  className: public
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+  hosts:
+    - host: talon.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: talon-studio-tls
+      hosts:
+        - talon.example.com
+
+persistence:
+  data:
+    enabled: true
+    size: 50Gi
+    storageClass: ""
+    existingClaim: ""
+
+postgres:
+  # Set external: true (with externalUrl or a POSTGRES_URL key in
+  # secrets.existingSecret) to use a managed database instead of the
+  # embedded Postgres. The data volume then only holds git repos, uploads,
+  # logs, and content caches.
+  external: false
+  externalUrl: ""
+
+config:
+  nextauthUrl: https://talon.example.com
+  authTrustHost: "true"
+  communityMaxStreams: "3"
+  communityMaxDetections: ""
+  disableContentSync: "false"
+  logDir: /data/logs
+  uploadsDir: /data/uploads
+  postgresDatabase: detections
+  postgresUser: talon
+  sigmaPort: "8001"
+
+secrets:
+  existingSecret: ""
+  nextauthSecret: replace-with-openssl-rand-hex-32
+  authSecret: replace-with-openssl-rand-hex-32
+  encryptionKey: replace-with-openssl-rand-hex-32
+  adminUsername: admin
+  adminEmail: admin@example.com
+  adminPassword: replace-with-a-strong-password
+  postgresPassword: replace-with-a-strong-password
+  metricsToken: replace-with-openssl-rand-hex-32
+
+extraEnv: []
+extraEnvFrom: []
+
+resources:
+  requests:
+    cpu: 500m
+    memory: 1Gi
+  limits:
+    cpu: "2"
+    memory: 4Gi
+
+networkPolicy:
+  enabled: true
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

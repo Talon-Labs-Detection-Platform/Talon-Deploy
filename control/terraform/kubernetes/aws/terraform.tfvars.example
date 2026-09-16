@@ -1,0 +1,21 @@
+# cp terraform.tfvars.example terraform.tfvars, then fill in and `terraform apply`.
+# Read ../../README.md first — ../../vm/aws is the cheaper, simpler shape.
+
+domain      = "control.example.com"
+admin_email = "you@example.com"
+image_tag   = "v1.0.0-beta.1"
+
+# Who may reach the EKS public API endpoint. No default on purpose.
+admin_cidrs = ["1.2.3.4/32"]
+
+region             = "eu-west-2"
+availability_zones = ["eu-west-2a", "eu-west-2b"]
+
+# Install an ingress controller and cert-manager BEFORE applying, then name the
+# Secret your Certificate writes.
+ingress_class   = "nginx"
+tls_secret_name = "talon-control-tls"
+
+db_instance_class     = "db.t4g.small"
+backup_retention_days = 14
+disk_size_gb          = 40

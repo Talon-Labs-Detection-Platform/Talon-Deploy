@@ -1,0 +1,25 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "talon-control.fullname" . }}
+  labels:
+    {{- include "talon-control.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.service.type }}
+  selector:
+    {{- include "talon-control.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: app
+  ports:
+    - name: http
+      port: {{ .Values.service.port }}
+      targetPort: http
+      protocol: TCP
+      {{- /*
+        Only valid on NodePort/LoadBalancer — the API server rejects a
+        nodePort on a ClusterIP Service, so the type guard is what stops a
+        leftover value from failing every future upgrade rather than being
+        harmlessly ignored.
+      */}}
+      {{- if and .Values.service.nodePort (ne .Values.service.type "ClusterIP") }}
+      nodePort: {{ .Values.service.nodePort }}
+      {{- end }}

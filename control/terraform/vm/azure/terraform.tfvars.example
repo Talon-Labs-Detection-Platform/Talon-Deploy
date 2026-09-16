@@ -1,0 +1,15 @@
+# cp terraform.tfvars.example terraform.tfvars, then fill in and `terraform apply`.
+# Authenticate first: `az login`.
+
+domain      = "control.example.com"
+admin_email = "you@example.com"
+image_tag   = "v1.0.0-beta.1"
+
+ssh_public_key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA... you@laptop"
+
+# Who may reach SSH. No default on purpose — name your own address or VPN range.
+admin_cidrs = ["1.2.3.4/32"]
+
+location     = "uksouth"
+vm_size      = "Standard_B2ms"
+disk_size_gb = 64
