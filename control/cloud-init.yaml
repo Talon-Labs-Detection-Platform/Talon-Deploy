@@ -117,6 +117,7 @@ write_files:
       POSTGRES_PASSWORD=$(openssl rand -hex 24)
       AUTH_SECRET=$(openssl rand -hex 32)
       TALON_CONTROL_ENCRYPTION_KEY=$(openssl rand -hex 32)
+      TALON_CONTROL_SETUP_TOKEN=$(openssl rand -hex 32)
       NEXTAUTH_URL=https://$TALON_DOMAIN
       TALON_TRUST_PROXY=true
       ENV
@@ -133,7 +134,7 @@ write_files:
 
       $(grep -E 'ENCRYPTION_KEY|AUTH_SECRET|POSTGRES_PASSWORD' /opt/talon-control/.env)
 
-      First sign-in: open https://$TALON_DOMAIN and complete /setup.
+      First sign-in (single use): https://$TALON_DOMAIN/setup?token=$(grep -E '^TALON_CONTROL_SETUP_TOKEN=' /opt/talon-control/.env | cut -d= -f2)
       CREDS
         chmod 600 /root/talon-credentials.txt
       fi
@@ -199,6 +200,7 @@ write_files:
             AUTH_SECRET: ${AUTH_SECRET:?set AUTH_SECRET in .env}
             TALON_CONTROL_ENCRYPTION_KEY: ${TALON_CONTROL_ENCRYPTION_KEY:?set TALON_CONTROL_ENCRYPTION_KEY in .env}
             NEXTAUTH_URL: ${NEXTAUTH_URL:?set NEXTAUTH_URL in .env}
+            TALON_CONTROL_SETUP_TOKEN: ${TALON_CONTROL_SETUP_TOKEN:-}
             TALON_TRUST_PROXY: ${TALON_TRUST_PROXY:-true}
             AUTH_TRUST_HOST: 'true'
             LOG_FORMAT: json
@@ -242,6 +244,10 @@ write_files:
         # timeout, so flush straight through.
         reverse_proxy 127.0.0.1:3001 {
           flush_interval -1
+          # Caddy writes X-Forwarded-For itself (the app rate-limits on its
+          # last hop), but passes a client's own X-Real-IP straight through
+          # unless told otherwise — and the sign-in log records that header.
+          header_up X-Real-IP {remote_host}
         }
         tls $TALON_ADMIN_EMAIL
       }
@@ -256,6 +262,6 @@ runcmd:
 
 final_message: |
   Talon Control bootstrap finished after $UPTIME seconds.
-  Open https://__DOMAIN__ and complete /setup.
+  Create the admin at the one-time setup link in /root/talon-credentials.txt.
   Secrets: sudo cat /root/talon-credentials.txt  (escrow the encryption key)
   Log:     sudo cat /var/log/talon-install.log

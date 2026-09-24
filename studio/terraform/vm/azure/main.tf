@@ -18,11 +18,12 @@ locals {
   # human can paste as-is, and templatefile would demand every shell `${VAR}` in
   # it be escaped, which is precisely how the paste-able copy and the Terraform
   # copy drift apart.
-  cloud_init = replace(replace(replace(replace(replace(
+  # No admin password: the appliance generates one on first boot, so none
+  # passes through user-data or Terraform state.
+  cloud_init = replace(replace(replace(replace(
     local.cloud_init_source,
     "__DOMAIN__", var.domain),
     "__ADMIN_EMAIL__", var.admin_email),
-    "__ADMIN_PASSWORD__", var.admin_password),
     "__SSH_KEY__", var.ssh_public_key),
     "__IMAGE_TAG__", var.image_tag)
 

@@ -22,7 +22,5 @@ data:
   {{- end }}
   NEXTAUTH_URL: {{ .Values.config.nextauthUrl | quote }}
   AUTH_TRUST_HOST: {{ .Values.config.authTrustHost | quote }}
-  SELF_HOSTED_COMMUNITY_MAX_STREAMS: {{ .Values.config.communityMaxStreams | quote }}
-  SELF_HOSTED_COMMUNITY_MAX_DETECTIONS: {{ .Values.config.communityMaxDetections | quote }}
   DISABLE_DETECTION_CONTENT_SYNC: {{ .Values.config.disableContentSync | quote }}
   TALON_LLM_GATEWAY_URL: {{ .Values.config.llmGatewayUrl | quote }}

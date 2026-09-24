@@ -1,4 +1,5 @@
-# Production Helm values — no lab defaults. Generate secrets before install.
+# Production Helm values — no lab defaults. Secrets left empty are generated
+# on first boot and kept on the data volume (see values.yaml `secrets`).
 replicaCount: 1
 
 image:
@@ -67,8 +68,6 @@ postgres:
 config:
   nextauthUrl: https://talon.example.com
   authTrustHost: "true"
-  communityMaxStreams: "3"
-  communityMaxDetections: ""
   disableContentSync: "false"
   logDir: /data/logs
   uploadsDir: /data/uploads
@@ -78,14 +77,14 @@ config:
 
 secrets:
   existingSecret: ""
-  nextauthSecret: replace-with-openssl-rand-hex-32
-  authSecret: replace-with-openssl-rand-hex-32
-  encryptionKey: replace-with-openssl-rand-hex-32
+  nextauthSecret: ""
+  authSecret: ""
+  encryptionKey: ""
   adminUsername: admin
   adminEmail: admin@example.com
-  adminPassword: replace-with-a-strong-password
-  postgresPassword: replace-with-a-strong-password
-  metricsToken: replace-with-openssl-rand-hex-32
+  adminPassword: ""
+  postgresPassword: ""
+  metricsToken: ""
 
 extraEnv: []
 extraEnvFrom: []

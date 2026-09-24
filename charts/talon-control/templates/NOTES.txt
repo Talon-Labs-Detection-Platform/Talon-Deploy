@@ -24,7 +24,12 @@ No ingress is enabled. Reach it with a port-forward:
 
 {{- if not .Values.secrets.adminEmail }}
 
-First run: visit /setup to create the admin account (no admin was seeded).
+First run: create the admin at the one-time setup link (no admin was seeded).
+{{- if .Values.secrets.setupToken }}
+  https://{{ .Values.ingress.host | default "<your host>" }}/setup?token=<secrets.setupToken>
+{{- else }}
+  kubectl -n {{ .Release.Namespace }} logs deploy/{{ include "talon-control.fullname" . }} | grep 'Setup link'
+{{- end }}
 {{- else }}
 
 First run: sign in as {{ .Values.secrets.adminEmail }} with the password you set.

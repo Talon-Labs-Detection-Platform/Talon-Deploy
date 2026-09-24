@@ -3,7 +3,6 @@
 
 domain      = "studio.example.com"
 admin_email    = "you@example.com"
-admin_password = "put-a-real-password-here"
 image_tag   = "v1.0.0"
 
 ssh_public_key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA... you@laptop"
