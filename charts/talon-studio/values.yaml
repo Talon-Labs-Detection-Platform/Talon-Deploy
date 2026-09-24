@@ -25,10 +25,12 @@ strategy:
 # Dropping ALL outright leaves a root process that cannot chown, so the boot
 # sequence the comment above describes fails — the container never starts.
 # Each capability below maps to a specific line:
-#   CHOWN        chown -R talon:talon (:87), chown -R postgres:postgres (:116)
-#   FOWNER       chmod 600 on the postgres-owned pwfile (:123)
-#   SETUID/SETGID  gosu drops to talon/postgres (:69,125,143,182,202,205)
-#   DAC_OVERRIDE root touching paths it has just chowned away to talon/postgres
+#   CHOWN        chown -R talon:talon (:96), chown -R postgres:postgres (:126)
+#   FOWNER       chmod 600 on the postgres-owned pwfile (:133), chmod 700 on
+#                the talon-owned secrets dir on later boots (:95)
+#   SETUID/SETGID  gosu drops to talon/postgres (:69,135,153,192,212,215)
+#   DAC_OVERRIDE root touching paths it has just chowned away to talon/postgres,
+#                including the first-boot secrets it re-reads (:91)
 # allowPrivilegeEscalation stays false: gosu lowers privilege, it does not raise
 # it, so no_new_privs does not block it — this matches docker-compose.release.yml,
 # which runs the same image under no-new-privileges:true.
@@ -77,8 +79,6 @@ postgres:
 config:
   nextauthUrl: http://talon.local
   authTrustHost: "true"
-  communityMaxStreams: "3"
-  communityMaxDetections: ""
   disableContentSync: "false"
   logDir: /data/logs
   uploadsDir: /data/uploads
@@ -91,19 +91,28 @@ config:
 
 secrets:
   # Name of a pre-created Secret to use instead of rendering one from the
-  # values below. It must provide the same keys the chart Secret carries
+  # values below. It may carry any of the keys the chart Secret does
   # (NEXTAUTH_SECRET, AUTH_SECRET, TALON_ENCRYPTION_KEY, TALON_ADMIN_*,
   # POSTGRES_PASSWORD, TALON_METRICS_TOKEN, and POSTGRES_URL when
-  # postgres.external is true).
+  # postgres.external is true); a missing one is generated as below.
   existingSecret: ""
-  nextauthSecret: replace-with-openssl-rand-hex-32
-  authSecret: replace-with-openssl-rand-hex-32
-  encryptionKey: replace-with-openssl-rand-hex-32
+  # Leave empty to have the container generate the value on first boot and
+  # keep it on the data volume (/data/secrets, mode 0600), reused on every
+  # restart. That needs persistence.data: with an emptyDir the values, and an
+  # embedded database, are regenerated on every pod start. With an external
+  # database and no persistence, set encryptionKey and authSecret here.
+  # Back up /data/secrets/encryption_key: stored credentials cannot be
+  # decrypted without it.
+  nextauthSecret: ""
+  authSecret: ""
+  encryptionKey: ""
   adminUsername: talon
   adminEmail: admin@talon.local
-  adminPassword: talon
-  postgresPassword: talon
-  metricsToken: talon-local-metrics-token
+  # Empty = a random first-admin password, printed once in the pod log and
+  # saved to /data/secrets/initial-admin.txt; changed at first sign-in.
+  adminPassword: ""
+  postgresPassword: ""
+  metricsToken: ""
   # Signed `talon_…` offline licence key. Left empty the appliance runs as
   # Community, which is the correct default — a tenant should come up working
   # whether or not a key has been issued yet.

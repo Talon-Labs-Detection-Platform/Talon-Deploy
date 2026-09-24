@@ -55,14 +55,20 @@ Roughly ten minutes later you have Docker, a firewall denying everything except
 SSH/80/443, Caddy terminating TLS with a real certificate, and the appliance
 behind it. Watch it with `ssh talon@<ip> 'sudo tail -f /var/log/talon-install.log'`.
 
-Then take the encryption key off the box and put it in your password manager:
+Then read the credentials file:
 
 ```bash
 ssh talon@<ip> 'sudo cat /root/talon-credentials.txt'
 ```
 
-It encrypts every credential the appliance stores. **A restored volume without it
-is ciphertext.** This is the step people skip and regret.
+- **Take the encryption key off the box** and put it in your password manager.
+  It encrypts every credential the appliance stores. **A restored volume without
+  it is ciphertext.** This is the step people skip and regret.
+- **Create the first admin.** For Talon Control, the file holds a single-use
+  setup link (`https://<domain>/setup?token=…`). Until someone opens it, nobody
+  can claim the server. For Talon Studio, the appliance generates the admin
+  password on first boot. The file says how to read it, and you change it at
+  first sign-in.
 
 ## 2. Terraform
 
@@ -76,7 +82,7 @@ module "talon" {
   domain         = "control.example.com"
   admin_email    = "you@example.com"
   ssh_public_key = file("~/.ssh/id_ed25519.pub")
-  image_tag      = "v1.0.0-beta.1"
+  image_tag      = "v1.0.0" # a pinned release, never a moving tag
 }
 ```
 
@@ -104,13 +110,26 @@ helm search repo talon
 ```
 
 ```bash
+SETUP_TOKEN="$(openssl rand -hex 32)"
 helm install control talon/talon-control \
   --namespace talon --create-namespace \
   --set ingress.host=control.example.com \
   --set secrets.authSecret="$(openssl rand -hex 32)" \
-  --set secrets.nextauthSecret="$(openssl rand -hex 32)" \
   --set secrets.encryptionKey="$(openssl rand -hex 32)" \
-  --set postgres.password="$(openssl rand -hex 24)"
+  --set postgres.password="$(openssl rand -hex 24)" \
+  --set secrets.setupToken="$SETUP_TOKEN"
+# then create the first admin at https://control.example.com/setup?token=$SETUP_TOKEN
+```
+
+```bash
+helm install studio talon/talon-studio \
+  --namespace talon --create-namespace \
+  --set ingress.enabled=true \
+  --set 'ingress.hosts[0].host=studio.example.com' \
+  --set 'ingress.hosts[0].paths[0].path=/' \
+  --set 'ingress.hosts[0].paths[0].pathType=Prefix'
+# secrets and the admin password are generated on the data volume at first boot:
+kubectl -n talon exec deploy/studio-talon-studio -- cat /data/secrets/initial-admin.txt
 ```
 
 Chart sources are under `charts/` here. Read `values.yaml` before a real
@@ -124,28 +143,41 @@ scale the node, not the deployment.
 
 ---
 
-## Before any of the above: the image registry
+## Before any of the above: the images
 
-**The container images are not anonymously pullable today** (checked
-2026-09-16). `ghcr.io/talon-labs-detection-platform/talon-control` and
-`…/talon-studio` both answer `401` to an unauthenticated request, because the
-packages are private while the products are in beta.
+Both products ship as the free **Community Edition**: every feature, usage
+limits, no licence key and no account. **The images are not public yet.**
+`ghcr.io/talon-labs-detection-platform/talon-control` and `…/talon-studio`
+become anonymously pullable when the Community Edition launches. Until then, the
+files here are published ahead of the images they install.
 
-So every path on this page needs the machine to authenticate first:
-
-```bash
-echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_USERNAME" --password-stdin
-```
-
-A classic PAT with `read:packages` is enough. On Kubernetes the cluster needs it
-as an `imagePullSecret` rather than a shell login; the chart takes
-`image.pullSecrets`.
-
-This is a packaging state, not a design. When the packages go public this
-section goes away and nothing else changes — the cloud-init, the charts and the
-Terraform are already anonymous.
+Nothing else changes at launch: the cloud-init, the charts and the Terraform
+already need no login.
 
 ---
+
+## Verifying what you downloaded
+
+Two independent checks, and you should do both on anything you would call
+production. The bootstrap runs as root on first boot; the chart runs in your
+cluster.
+
+**Digests.** Every published file has a SHA-256 in
+<https://www.talonlabs.dev/deploy-manifest.json>:
+
+```bash
+curl -fsSL https://www.talonlabs.dev/control/cloud-init.yaml | sha256sum
+curl -fsSL https://www.talonlabs.dev/deploy-manifest.json | grep cloud-init
+```
+
+On the Terraform path there is no human in the loop to read the file first, so
+pass that digest as `cloud_init_sha256`. The plan then fails if what comes back
+is not what you reviewed.
+
+**Chart signatures: not yet.** The charts here carry no `.prov` file, so
+`helm install --verify` will refuse them — correctly, because there is
+nothing to verify against. Check the digests above instead. This section
+changes by itself on the first publish made with a signing key.
 
 ## Where everything is served
 
@@ -169,13 +201,14 @@ check that what you downloaded is what we published.
 
 - Choosing between the options: <https://www.talonlabs.dev/deploy>
 - Talon Control, in full: <https://www.talonlabs.dev/control/docs/install>
-- Talon Studio: the manual is not public yet — the product is in private beta.
+- Talon Studio: the manual is not public yet — it opens when the Community
+  Edition images are published.
   <https://www.talonlabs.dev/deploy> carries the hosting story, and the files in
   `studio/` here carry their own comments.
 
 ## Licence and support
 
-These deployment artifacts are provided for use with a licensed Talon Control or
-Talon Studio deployment. The product images themselves are separately licensed.
-Issues with the artifacts in this repository are welcome here; product support
-goes through your normal channel.
+Talon Control and Talon Studio are free to use under the
+[Talon Labs Community Edition Licence](https://www.talonlabs.dev/company/licence).
+They are free, but not open source. An Enterprise edition is in development.
+Questions and problems with these files: open an issue here.

@@ -9,7 +9,8 @@ type: application
 # 0.4.0, not 0.3.2: the chart this succeeds carried the SearXNG, Kokoro, Vexa
 # and voice-cloning stacks, and this one renders none of them. Anyone upgrading
 # from 0.3.x loses those workloads, which is a minor-version change, not a patch.
-version: 0.4.0
+# 0.4.1 adds secrets.setupToken (the one-time /setup code) and nothing else.
+version: 0.4.1
 # Bare semver — the tag the registry actually has. Publishing a release pushes
 # both this and the v-prefixed git tag (.github/workflows/docker-publish.yml),
 # and values.yaml's empty image.tag resolves to this one.

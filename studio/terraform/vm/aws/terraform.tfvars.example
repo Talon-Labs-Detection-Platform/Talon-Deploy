@@ -2,7 +2,6 @@
 
 domain      = "studio.example.com"
 admin_email    = "you@example.com"
-admin_password = "put-a-real-password-here"
 image_tag   = "v1.0.0"
 
 # Your full public key line.

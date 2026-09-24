@@ -135,6 +135,10 @@ secrets:
   authSecret: "" # openssl rand -hex 32
   encryptionKey: "" # openssl rand -hex 32
   # Optional first-boot admin. When empty, /setup creates the admin on first run.
+  # The one-time code /setup asks for while no admin exists (32+ characters,
+  # `openssl rand -hex 32`). Leave empty and the pod generates one and prints
+  # the setup link in its log. Not needed when adminEmail/adminPassword are set.
+  setupToken: ""
   adminEmail: ""
   adminPassword: ""
 

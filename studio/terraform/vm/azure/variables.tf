@@ -30,21 +30,6 @@ variable "admin_email" {
   type        = string
 }
 
-variable "admin_password" {
-  description = <<-EOT
-    First-boot password for the `admin` account. TALON_STRICT_SECURITY is on in
-    the bootstrap, so the appliance refuses to start on a well-known default —
-    give it a real one. Mark your tfvars file sensitive; it ends up in state.
-  EOT
-  type        = string
-  sensitive   = true
-
-  validation {
-    condition     = !contains(["talon", "admin", "password", "changeme"], var.admin_password)
-    error_message = "admin_password is a well-known default; the appliance will refuse to boot on it."
-  }
-}
-
 variable "ssh_public_key" {
   description = "Full public key line, e.g. 'ssh-ed25519 AAAA... you@laptop'."
   type        = string

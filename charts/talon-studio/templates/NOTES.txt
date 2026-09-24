@@ -8,9 +8,18 @@ Then open:
 
   http://localhost:3000
 
-Default first-run credentials are controlled by:
+First sign-in: {{ .Values.secrets.adminUsername }} (or {{ .Values.secrets.adminEmail }}).
+{{- if .Values.secrets.adminPassword }}
+The password is the one you set in secrets.adminPassword.
+{{- else }}
+The password is generated on first boot, printed once in the pod log and saved
+on the data volume. Read it with:
 
-  secrets.adminUsername
-  secrets.adminPassword
+  kubectl exec deploy/{{ include "talon-studio.fullname" . }} -- cat /data/secrets/initial-admin.txt
 
-Change default secrets before exposing Talon Studio to a network.
+You must change it at first sign-in.
+{{- end }}
+
+Secrets left empty in values are generated on first boot into /data/secrets on
+the data volume. Back up /data/secrets/encryption_key: stored credentials
+cannot be decrypted without it.
