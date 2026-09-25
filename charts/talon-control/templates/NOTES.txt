@@ -34,6 +34,8 @@ First run: create the admin at the one-time setup link (no admin was seeded).
 
 First run: sign in as {{ .Values.secrets.adminEmail }} with the password you set.
 {{- end }}
+Then paste your Talon key on the key screen; nothing else opens until it is in.
+The Community key comes with a Talon Labs account: https://talonlabs.dev/sign-up
 
 {{- if not .Values.signing.enabled }}
 

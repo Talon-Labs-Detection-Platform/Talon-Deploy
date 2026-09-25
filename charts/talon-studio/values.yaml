@@ -84,6 +84,10 @@ config:
   uploadsDir: /data/uploads
   llmGatewayUrl: ""
   llmGatewayApiKey: ""
+  # Talon Labs' licence API. Called only once an Enterprise key is stored: to
+  # activate it, check in daily, and release it. Empty = no calls at all; with
+  # no key, or a Community key, the appliance never contacts Talon Labs.
+  licenseApiUrl: https://www.talonlabs.dev/api/license
   postgresDatabase: detections
   postgresUser: talon
   postgresPort: "5432"
@@ -113,9 +117,10 @@ secrets:
   adminPassword: ""
   postgresPassword: ""
   metricsToken: ""
-  # Signed `talon_…` offline licence key. Left empty the appliance runs as
-  # Community, which is the correct default — a tenant should come up working
-  # whether or not a key has been issued yet.
+  # Signed `talstu_…` licence key, applied at boot. A Talon key is required:
+  # left empty, the appliance stops at the key screen until the first admin
+  # pastes one. Set it to the tenant's Community key (from a Talon Labs
+  # account) or an Enterprise key for a tenant that comes up working.
   licenseKey: ""
 
 # Extra environment for the app container: plain k8s EnvVar / EnvFromSource lists.
