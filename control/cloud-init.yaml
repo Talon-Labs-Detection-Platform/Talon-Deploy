@@ -262,6 +262,7 @@ runcmd:
 
 final_message: |
   Talon Control bootstrap finished after $UPTIME seconds.
-  Create the admin at the one-time setup link in /root/talon-credentials.txt.
+  Create the admin at the one-time setup link in /root/talon-credentials.txt,
+  then paste your Talon key (https://talonlabs.dev/sign-up issues a Community key).
   Secrets: sudo cat /root/talon-credentials.txt  (escrow the encryption key)
   Log:     sudo cat /var/log/talon-install.log

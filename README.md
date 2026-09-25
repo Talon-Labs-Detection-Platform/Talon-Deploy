@@ -69,6 +69,11 @@ ssh talon@<ip> 'sudo cat /root/talon-credentials.txt'
   can claim the server. For Talon Studio, the appliance generates the admin
   password on first boot. The file says how to read it, and you change it at
   first sign-in.
+- **Paste your Talon key.** Both products need one: until it is in, the
+  appliance shows only a key screen, and its agents and outgoing messages are
+  paused. Every Talon Labs account holds a Community key for each product
+  (<https://www.talonlabs.dev/sign-up>); it is on your account page and in the
+  welcome mail, and it is checked on your server, never by Talon Labs.
 
 ## 2. Terraform
 
@@ -119,6 +124,7 @@ helm install control talon/talon-control \
   --set postgres.password="$(openssl rand -hex 24)" \
   --set secrets.setupToken="$SETUP_TOKEN"
 # then create the first admin at https://control.example.com/setup?token=$SETUP_TOKEN
+# and paste your Talon key on the key screen
 ```
 
 ```bash
@@ -130,6 +136,8 @@ helm install studio talon/talon-studio \
   --set 'ingress.hosts[0].paths[0].pathType=Prefix'
 # secrets and the admin password are generated on the data volume at first boot:
 kubectl -n talon exec deploy/studio-talon-studio -- cat /data/secrets/initial-admin.txt
+# sign in, change the password, and paste your Talon key on the key screen
+# (or pass --set secrets.licenseKey=talstu_… at install)
 ```
 
 Chart sources are under `charts/` here. Read `values.yaml` before a real
@@ -145,8 +153,9 @@ scale the node, not the deployment.
 
 ## Before any of the above: the images
 
-Both products ship as the free **Community Edition**: every feature, usage
-limits, no licence key and no account. **The images are not public yet.**
+Both products are in beta and ship as the **Community Edition**, at no charge,
+on the Community key that comes with a Talon Labs account. **The images are
+not public yet.**
 `ghcr.io/talon-labs-detection-platform/talon-control` and `…/talon-studio`
 become anonymously pullable when the Community Edition launches. Until then, the
 files here are published ahead of the images they install.
@@ -201,14 +210,12 @@ check that what you downloaded is what we published.
 
 - Choosing between the options: <https://www.talonlabs.dev/deploy>
 - Talon Control, in full: <https://www.talonlabs.dev/control/docs/install>
-- Talon Studio: the manual is not public yet — it opens when the Community
-  Edition images are published.
-  <https://www.talonlabs.dev/deploy> carries the hosting story, and the files in
-  `studio/` here carry their own comments.
+- Talon Studio, in full: <https://www.talonlabs.dev/docs/install>
 
 ## Licence and support
 
-Talon Control and Talon Studio are free to use under the
-[Talon Labs Community Edition Licence](https://www.talonlabs.dev/company/licence).
-They are free, but not open source. An Enterprise edition is in development.
+Talon Control and Talon Studio run as the Community Edition under the
+[Talon Labs Community Edition Licence](https://www.talonlabs.dev/company/licence),
+on the Community key that comes with a Talon Labs account. They are not open
+source. An Enterprise edition is in development.
 Questions and problems with these files: open an issue here.

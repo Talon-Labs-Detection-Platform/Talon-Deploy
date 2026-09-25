@@ -10,7 +10,9 @@ type: application
 # and voice-cloning stacks, and this one renders none of them. Anyone upgrading
 # from 0.3.x loses those workloads, which is a minor-version change, not a patch.
 # 0.4.1 adds secrets.setupToken (the one-time /setup code) and nothing else.
-version: 0.4.1
+# 0.4.2 tells a first install to paste its Talon key (NOTES.txt), since a key
+# is required from this release on; the templates are otherwise unchanged.
+version: 0.4.2
 # Bare semver — the tag the registry actually has. Publishing a release pushes
 # both this and the v-prefixed git tag (.github/workflows/docker-publish.yml),
 # and values.yaml's empty image.tag resolves to this one.
